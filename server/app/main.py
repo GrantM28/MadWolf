@@ -93,14 +93,13 @@ def login(body: LoginBody):
             samesite="lax",
             secure=False,  # set True when behind HTTPS
             max_age=60 * 60 * 24 * 14,
-            path="/",
         )
         return resp
 
 @app.post("/api/auth/logout")
 def logout():
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(COOKIE_NAME, path="/")
+    resp.delete_cookie(COOKIE_NAME)
     return resp
 
 # -------- Libraries --------
