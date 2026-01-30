@@ -58,9 +58,18 @@ def scan_library(library_id: int) -> dict:
 
                         mm = s.get(MediaMeta, item_id) if item_id else None
                         if mm:
-                            meta_skipped += 1
-                            continue  # already have metadata, skip
+                            # Only skip if meta looks “complete enough”
+                            complete_enough = bool(
+                                (mm.clean_title) and
+                                (mm.duration_seconds or mm.video_codec or (mm.width and mm.height)) and
+                                (mm.poster_path or mm.plot)
+                            )
+                            if complete_enough:
+                                meta_skipped += 1
+                                continue
+
                         needs_meta = True
+
                     else:
                         item = MediaItem(
                             library_id=library_id,

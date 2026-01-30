@@ -43,6 +43,11 @@ function setUsername(u) {
   if (!u) localStorage.removeItem(USER_KEY);
   else localStorage.setItem(USER_KEY, u);
 }
+function withToken(url) {
+  const t = getToken();
+  if (!t) return url;
+  return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t);
+}
 
 function layout(title, bodyHtml, topRightHtml = "") {
   app.innerHTML = `
@@ -501,42 +506,71 @@ async function renderBrowse() {
   wireItemClicks();
 }
 
+function fmtDur(sec) {
+  sec = Number(sec || 0);
+  if (!sec) return "";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
 function renderItemsHtml(items) {
   if (!items.length) return `<p class="muted">No items yet. Run Scan.</p>`;
-  return items
-    .map(
-      (i) => `
-        <button class="item" data-id="${i.id}">
+
+  return items.map((i) => {
+    const poster = i.poster_url ? withToken(i.poster_url) : "";
+    const year = i.year ? `${i.year}` : "";
+    const dur = fmtDur(i.duration_seconds);
+    const res = (i.width && i.height) ? `${i.width}×${i.height}` : "";
+    const metaBits = [year, dur, res, (i.ext || "").replace(".", "").toUpperCase()].filter(Boolean).join(" • ");
+
+    return `
+      <button class="item tile" data-id="${i.id}">
+        <div class="posterWrap">
+          ${
+            poster
+              ? `<img class="poster" loading="lazy" src="${esc(poster)}" alt="${esc(i.title || "")}">`
+              : `<div class="poster placeholder"></div>`
+          }
+          <div class="tileShade"></div>
+          <div class="tilePlay">▶</div>
+        </div>
+        <div class="tileText">
           <div class="itemTitle">${esc(i.title)}</div>
-          <div class="itemMeta">${esc(i.ext || "")}</div>
-        </button>
-      `
-    )
-    .join("");
+          <div class="itemMeta">${esc(metaBits)}</div>
+        </div>
+      </button>
+    `;
+  }).join("");
 }
 
 function wireItemClicks() {
   const wrap = document.querySelector("#playerWrap");
   const player = document.querySelector("#player");
   const nowTitle = document.querySelector("#nowTitle");
+  const itemsEl = document.querySelector("#items");
 
-  document.querySelectorAll(".item[data-id]").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = parseInt(btn.getAttribute("data-id"), 10);
-      const item = state.items.find((x) => x.id === id);
-      if (!item) return;
+  itemsEl.onclick = async (ev) => {
+    const btn = ev.target.closest(".item[data-id]");
+    if (!btn) return;
 
-      nowTitle.textContent = item.title || `Item ${id}`;
-      player.src = `/api/items/${id}/file`;
-      wrap.style.display = "";
-      try {
-        await player.play();
-      } catch (_) {
-        // autoplay may be blocked
-      }
-    };
-  });
+    const id = parseInt(btn.getAttribute("data-id"), 10);
+    const item = state.items.find((x) => x.id === id);
+    if (!item) return;
+
+    nowTitle.textContent = item.title || `Item ${id}`;
+    player.src = withToken(`/api/items/${id}/file`);
+    wrap.style.display = "";
+    try {
+      await player.play();
+    } catch (_) {}
+  };
+
+  player.onerror = () => {
+    setStatus("Playback failed (check DevTools → Network for 401/404).");
+  };
 }
+
 
 boot().catch((e) => {
   layout("Boot error", `

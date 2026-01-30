@@ -28,11 +28,14 @@ def _startup():
     os.makedirs(MEDIA_ROOT, exist_ok=True)
 
 def current_user_id(request: Request) -> int:
-    # 1) Cookie auth (normal same-origin browser use)
+    # 1) Cookie auth (same-origin browser use)
     token = request.cookies.get(COOKIE_NAME)
 
-    # 2) Header auth fallback (fixes “refresh sends me to login” when cookie isn’t persisted,
-    #    or when you’re testing from a different origin like VSCode live server)
+    # 1.5) Query param auth (needed for <video> / <img> when using Bearer token)
+    if not token:
+        token = request.query_params.get("token")
+
+    # 2) Header auth fallback
     if not token:
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
