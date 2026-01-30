@@ -20,4 +20,4 @@ ENV MADWOLF_PORT=8091
 
 EXPOSE 8091
 
-CMD ["python", "-m", "uvicorn", "server.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "uvicorn", "server.app.main:app", "--host", "0.0.0.0", "--port", "8091"]
