@@ -120,7 +120,7 @@ def _discover_media_folders(max_depth: int = 2):
     mr = os.path.abspath(MEDIA_ROOT)
     max_depth = max(1, min(int(max_depth), 6))
 
-    ignore = {"@eaDir", "#recycle", "lost+found"}
+    ignore = {"@eaDir", "#recycle", "lost+found", "appdata", "system", "isos", "domains"}
     out = []
 
     for root, dirs, _files in os.walk(mr):
