@@ -116,42 +116,42 @@ def _validate_library_path(p: str) -> str:
         raise HTTPException(status_code=400, detail="path_not_a_directory")
     return p
 
-def _discover_media_folders(max_depth: int = 2):
+def _discover_media_folders():
     mr = os.path.abspath(MEDIA_ROOT)
-    max_depth = max(1, min(int(max_depth), 6))
 
-    ignore = {"@eaDir", "#recycle", "lost+found", "appdata", "system", "isos", "domains"}
+    # Unraid/system shares you DON'T want in the dropdown
+    ignore = {
+        "@eaDir", "#recycle", "lost+found",
+        "appdata", "domains", "system", "isos",
+        "flash", "boot", "backups", "tmp"
+    }
+
     out = []
+    try:
+        with os.scandir(mr) as it:
+            for e in it:
+                if not e.is_dir(follow_symlinks=False):
+                    continue
+                name = e.name
 
-    for root, dirs, _files in os.walk(mr):
-        rel = os.path.relpath(root, mr)
-        depth = 0 if rel == "." else rel.count(os.sep) + 1
+                # ignore hidden + system shares
+                if name.startswith(".") or name in ignore:
+                    continue
 
-        # prune traversal
-        if depth >= max_depth:
-            dirs[:] = []
-            continue
+                out.append({"label": name, "path": os.path.join(mr, name)})
+    except FileNotFoundError:
+        return []
 
-        # filter dirs in-place so os.walk doesn't descend into junk
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ignore]
-
-        for d in dirs:
-            p = os.path.join(root, d)
-            out.append(p)
-
-    # unique + stable sort
-    out = sorted(set(out))
-
-    # return nice labels relative to media root
-    return [{"label": os.path.relpath(p, mr), "path": p} for p in out]
+    out.sort(key=lambda x: x["label"].lower())
+    return out
 
 
 @app.get("/api/libraries/discover")
-def discover_libraries(request: Request, depth: int = 2):
+def discover_libraries(request: Request):
     _ = current_user_id(request)
     return {
         "mediaRoot": MEDIA_ROOT,
-        "folders": _discover_media_folders(depth),
+        "folders": _discover_media_folders(),
     }
 
 

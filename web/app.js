@@ -313,7 +313,7 @@ async function openAddLibraryModal(mediaRoot, onCreated) {
 
     try {
       const depth = parseInt(depthSel.value, 10) || 3;
-      const disc = await api(`/api/libraries/discover?depth=${depth}`);
+      const disc = await api(`/api/libraries/discover`);
       discovered = Array.isArray(disc.folders) ? disc.folders : [];
       msg.textContent = discovered.length
         ? `Found ${discovered.length} folder(s).`
