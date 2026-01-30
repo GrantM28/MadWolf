@@ -116,6 +116,45 @@ def _validate_library_path(p: str) -> str:
         raise HTTPException(status_code=400, detail="path_not_a_directory")
     return p
 
+def _discover_media_folders(max_depth: int = 2):
+    mr = os.path.abspath(MEDIA_ROOT)
+    max_depth = max(1, min(int(max_depth), 6))
+
+    ignore = {"@eaDir", "#recycle", "lost+found"}
+    out = []
+
+    for root, dirs, _files in os.walk(mr):
+        rel = os.path.relpath(root, mr)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+
+        # prune traversal
+        if depth >= max_depth:
+            dirs[:] = []
+            continue
+
+        # filter dirs in-place so os.walk doesn't descend into junk
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ignore]
+
+        for d in dirs:
+            p = os.path.join(root, d)
+            out.append(p)
+
+    # unique + stable sort
+    out = sorted(set(out))
+
+    # return nice labels relative to media root
+    return [{"label": os.path.relpath(p, mr), "path": p} for p in out]
+
+
+@app.get("/api/libraries/discover")
+def discover_libraries(request: Request, depth: int = 2):
+    _ = current_user_id(request)
+    return {
+        "mediaRoot": MEDIA_ROOT,
+        "folders": _discover_media_folders(depth),
+    }
+
+
 @app.get("/api/libraries")
 def list_libraries(request: Request):
     _ = current_user_id(request)
