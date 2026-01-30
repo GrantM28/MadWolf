@@ -12,6 +12,8 @@ from .security import hash_pw, verify_pw, create_session_token, verify_session_t
 from .scanner import scan_library
 from .streaming import serve_file_with_range
 from . import recs
+from datetime import datetime, timedelta, timezone
+
 
 MEDIA_ROOT = os.getenv("MADWOLF_MEDIA_ROOT", "/mnt/user")
 
@@ -103,17 +105,16 @@ def login(body: LoginBody):
             "token": token,  # <-- lets the frontend persist session on refresh
         })
 
-        expires = datetime.utcnow() + timedelta(days=14)
+        expires = datetime.now(timezone.utc) + timedelta(days=14)
 
         resp.set_cookie(
             COOKIE_NAME,
             token,
             httponly=True,
             samesite="lax",
-            secure=False,     # set True when behind HTTPS
+            secure=False,  # True when behind HTTPS
             max_age=60 * 60 * 24 * 14,
-            expires=expires,
-            path="/",         # be explicit
+            path="/",
         )
         return resp
 
