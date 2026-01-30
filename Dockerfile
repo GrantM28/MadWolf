@@ -16,8 +16,8 @@ COPY web /app/web
 ENV MADWOLF_CONFIG_DIR=/config
 ENV MADWOLF_MEDIA_ROOT=/mnt/media
 ENV MADWOLF_SECRET=change-me
-ENV MADWOLF_PORT=8080
+ENV MADWOLF_PORT=8088
 
-EXPOSE 8080
+EXPOSE 8088
 
 CMD ["python", "-m", "uvicorn", "server.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
