@@ -1,26 +1,36 @@
 import os
+import threading
+from datetime import datetime
 from sqlmodel import select
-from .models import MediaItem, Library, MediaMeta
+
 from .db import session
+from .models import Library, MediaItem, MediaMeta
 from .metadata import extract_local_metadata
 
-VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mov"}
+VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm"}
+
+_scan_lock = threading.Lock()
 
 def scan_library(library_id: int) -> dict:
-    """
-    Scan: walk the library folder, insert new files by path.
-    Also builds local metadata (no API key) via ffprobe + posters + nfo.
-    """
-    with session() as s:
-        lib = s.get(Library, library_id)
-        if not lib:
-            return {"ok": False, "error": "library_not_found"}
+    # Prevent multiple scans at once (same process)
+    if not _scan_lock.acquire(blocking=False):
+        return {"ok": False, "error": "scan_already_running"}
+
+    try:
+        # Fetch library path in a tiny transaction
+        with session() as s:
+            lib = s.get(Library, library_id)
+            if not lib:
+                return {"ok": False, "error": "library_not_found"}
+            lib_path = lib.path
 
         added = 0
-        skipped = 0
+        existed = 0
         meta_added = 0
+        meta_skipped = 0
+        meta_updated = 0
 
-        for root, _, files in os.walk(lib.path):
+        for root, _, files in os.walk(lib_path):
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext not in VIDEO_EXTS:
@@ -28,42 +38,78 @@ def scan_library(library_id: int) -> dict:
 
                 full_path = os.path.join(root, fn)
 
-                existing = s.exec(select(MediaItem).where(MediaItem.path == full_path)).first()
-                if existing:
-                    skipped += 1
-
-                    # Backfill metadata if missing
-                    mm = s.get(MediaMeta, existing.id)
-                    if not mm:
-                        m = extract_local_metadata(existing.path, existing.title)
-                        mm = MediaMeta(media_id=existing.id, **m)
-                        s.add(mm)
-                        meta_added += 1
-                    continue
-
                 try:
                     st = os.stat(full_path)
                 except OSError:
                     continue
 
+                # --- Phase 1: ensure MediaItem exists (short transaction) ---
+                needs_meta = False
+                item_id = None
                 title = os.path.splitext(fn)[0].replace(".", " ").replace("_", " ").strip()
-                item = MediaItem(
-                    library_id=lib.id,
-                    title=title,
-                    path=full_path,
-                    ext=ext,
-                    size_bytes=st.st_size,
-                )
-                s.add(item)
-                s.flush()  # get item.id without committing
 
-                # Build local metadata
-                m = extract_local_metadata(full_path, title)
-                mm = MediaMeta(media_id=item.id, **m)
-                s.add(mm)
+                with session() as s:
+                    item = s.exec(select(MediaItem).where(MediaItem.path == full_path)).first()
 
-                added += 1
-                meta_added += 1
+                    if item:
+                        existed += 1
+                        item_id = item.id
+                        title = item.title or title
 
-        s.commit()
-        return {"ok": True, "added": added, "skipped": skipped, "meta_added": meta_added}
+                        mm = s.get(MediaMeta, item_id) if item_id else None
+                        if mm:
+                            meta_skipped += 1
+                            continue  # already have metadata, skip
+                        needs_meta = True
+                    else:
+                        item = MediaItem(
+                            library_id=library_id,
+                            title=title,
+                            path=full_path,
+                            ext=ext,
+                            size_bytes=st.st_size,
+                        )
+                        s.add(item)
+                        s.commit()
+                        s.refresh(item)
+                        item_id = item.id
+                        added += 1
+                        needs_meta = True
+
+                if not needs_meta or not item_id:
+                    continue
+
+                # --- Phase 2: slow metadata OUTSIDE any DB lock ---
+                meta = extract_local_metadata(full_path, title)
+
+                # --- Phase 3: upsert MediaMeta (short transaction) ---
+                with session() as s:
+                    mm = s.get(MediaMeta, item_id)
+                    if not mm:
+                        s.add(MediaMeta(media_id=item_id, **meta))
+                        meta_added += 1
+                    else:
+                        # Fill missing fields only (don’t overwrite good data)
+                        for k, v in meta.items():
+                            if v is None:
+                                continue
+                            cur = getattr(mm, k, None)
+                            if cur in (None, "", 0):
+                                setattr(mm, k, v)
+                        mm.updated_at = datetime.utcnow()
+                        s.add(mm)
+                        meta_updated += 1
+
+                    s.commit()
+
+        return {
+            "ok": True,
+            "library_id": library_id,
+            "added": added,
+            "existed": existed,
+            "meta_added": meta_added,
+            "meta_updated": meta_updated,
+            "meta_skipped": meta_skipped,
+        }
+    finally:
+        _scan_lock.release()

@@ -1,15 +1,40 @@
 import os
-from sqlmodel import SQLModel, create_engine, Session
+from contextlib import contextmanager
 
-def get_db_path() -> str:
-    config_dir = os.getenv("MADWOLF_CONFIG_DIR", "/config")
-    os.makedirs(config_dir, exist_ok=True)
-    return os.path.join(config_dir, "madwolf.sqlite")
+from sqlmodel import SQLModel, Session, create_engine
+from sqlalchemy import event
 
-engine = create_engine(f"sqlite:///{get_db_path()}", connect_args={"check_same_thread": False})
+DB_PATH = os.getenv("MADWOLF_DB", "/config/madwolf.db")
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-def init_db() -> None:
+DATABASE_URL = f"sqlite:///{DB_PATH}"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        # how long sqlite will wait for a lock before erroring
+        "timeout": 30,
+    },
+    pool_pre_ping=True,
+)
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_connection, _):
+    # These run on every new DB connection.
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+    cursor.execute("PRAGMA foreign_keys=ON;")
+    cursor.execute("PRAGMA busy_timeout=30000;")  # 30s
+    cursor.close()
+
+def init_db():
+    # Import models so SQLModel.metadata is populated
+    from . import models  # noqa: F401
     SQLModel.metadata.create_all(engine)
 
-def session() -> Session:
-    return Session(engine)
+@contextmanager
+def session():
+    with Session(engine) as s:
+        yield s
