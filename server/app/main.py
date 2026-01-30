@@ -13,7 +13,7 @@ from .scanner import scan_library
 from .streaming import serve_file_with_range
 from . import recs
 
-MEDIA_ROOT = os.getenv("MADWOLF_MEDIA_ROOT", "/mnt/media")
+MEDIA_ROOT = os.getenv("MADWOLF_MEDIA_ROOT", "/mnt/user")
 
 app = FastAPI(title="MadWolf")
 

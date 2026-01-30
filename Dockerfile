@@ -14,7 +14,7 @@ COPY server /app/server
 COPY web /app/web
 
 ENV MADWOLF_CONFIG_DIR=/config
-ENV MADWOLF_MEDIA_ROOT=/mnt/media
+ENV MADWOLF_MEDIA_ROOT=/mnt/user
 ENV MADWOLF_SECRET=change-me
 ENV MADWOLF_PORT=8091
 

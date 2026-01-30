@@ -422,7 +422,7 @@ async function renderApp() {
   const rows = shell.querySelector("#rows");
   const homeRows = shell.querySelector("#homeRows");
 
-  let mediaRoot = "/mnt/media";
+  let mediaRoot = "/mnt/user";
   let libs = [];
   let currentLibId = null;
   let items = [];
