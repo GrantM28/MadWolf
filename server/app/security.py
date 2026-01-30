@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 
 COOKIE_NAME = "sb_session"
 JWT_ALG = "HS256"

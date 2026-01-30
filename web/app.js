@@ -1,16 +1,23 @@
-// Stupid-simple UI:
-// setup admin -> login -> add libraries -> scan -> click title to play
-// Also: on refresh, if cookie is still valid, it auto-enters the app.
+// Minimal UI flow:
+// 1) Setup admin (first run)
+// 2) Login
+// 3) Libraries (add -> scan -> browse -> play)
+//
+// Also fixes "refresh sends me back to login" by persisting token (if backend returns it).
 
 const app = document.querySelector("#app");
+
+const TOKEN_KEY = "mw_token";
+const USER_KEY = "mw_user";
 
 const state = {
   mediaRoot: "",
   libraries: [],
   folders: [],
-  currentLibId: null,
+  currentLib: null,
   items: [],
-  pollTimer: null,
+  view: "loading", // loading | setup | login | libraries | browse
+  status: "",
 };
 
 function esc(s) {
@@ -22,20 +29,54 @@ function esc(s) {
     .replaceAll("'", "&#039;");
 }
 
-function setView(html) {
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || "";
+}
+function setToken(t) {
+  if (!t) localStorage.removeItem(TOKEN_KEY);
+  else localStorage.setItem(TOKEN_KEY, t);
+}
+function getUsername() {
+  return localStorage.getItem(USER_KEY) || "";
+}
+function setUsername(u) {
+  if (!u) localStorage.removeItem(USER_KEY);
+  else localStorage.setItem(USER_KEY, u);
+}
+
+function layout(title, bodyHtml, topRightHtml = "") {
   app.innerHTML = `
-    <div class="wrap">
-      <div class="panel">
-        ${html}
-      </div>
+    <div class="shell">
+      <header class="top">
+        <div class="brand">
+          <div class="logo">MW</div>
+          <div class="title">
+            <div class="name">MadWolf</div>
+            <div class="sub">${esc(title)}</div>
+          </div>
+        </div>
+        <div class="topRight">${topRightHtml}</div>
+      </header>
+
+      <main class="main">
+        ${bodyHtml}
+      </main>
+
+      <footer class="foot">
+        <span class="muted">Media root:</span> <span class="code">${esc(state.mediaRoot || "")}</span>
+        <span class="dot">•</span>
+        <span class="muted" id="statusLine">${esc(state.status || "")}</span>
+      </footer>
     </div>
   `;
-  return app.querySelector(".panel");
 }
 
 async function api(path, opts = {}) {
   const headers = new Headers(opts.headers || {});
-  // Only force JSON header if we're sending a body
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   if (opts.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -44,10 +85,10 @@ async function api(path, opts = {}) {
     ...opts,
     headers,
     credentials: "include",
+    cache: "no-store",
   });
 
   if (!res.ok) {
-    // Try to pull a useful error message
     let msg = res.statusText || "Request failed";
     try {
       const ct = res.headers.get("content-type") || "";
@@ -59,7 +100,9 @@ async function api(path, opts = {}) {
         if (t) msg = t;
       }
     } catch (_) {}
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
 
   const ct = res.headers.get("content-type") || "";
@@ -67,25 +110,29 @@ async function api(path, opts = {}) {
   return res.text();
 }
 
-function stopPolling() {
-  if (state.pollTimer) {
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
+function setStatus(msg) {
+  state.status = msg || "";
+  const el = document.querySelector("#statusLine");
+  if (el) el.textContent = state.status;
+}
+
+function btn(id, label, kind = "") {
+  return `<button class="btn ${kind}" id="${id}">${esc(label)}</button>`;
 }
 
 async function boot() {
-  stopPolling();
+  setStatus("");
 
+  // server reachable + setup status
   let st;
   try {
     st = await api("/api/setup/status");
   } catch (e) {
-    setView(`
-      <div class="card">
-        <div class="h1">Server not reachable</div>
-        <div class="muted">Error: <span class="code">${esc(e.message)}</span></div>
-      </div>
+    layout("Offline", `
+      <section class="card">
+        <h2>Server not reachable</h2>
+        <p class="muted">Error: <span class="code">${esc(e.message)}</span></p>
+      </section>
     `);
     return;
   }
@@ -93,60 +140,59 @@ async function boot() {
   state.mediaRoot = st.mediaRoot || state.mediaRoot;
 
   if (st.needsSetup) {
+    state.view = "setup";
     renderSetup();
     return;
   }
 
-  // If setup is done, try to enter using existing cookie.
-  // /api/libraries is protected; if it works, you're logged in.
+  // try to enter
   try {
     await api("/api/libraries");
-    await renderApp();
-  } catch (_) {
+    state.view = "libraries";
+    await renderLibraries();
+  } catch (e) {
+    // token/cookie invalid
+    if (e.status === 401) {
+      setToken("");
+      setUsername("");
+    }
+    state.view = "login";
     renderLogin();
   }
 }
 
 function renderSetup() {
-  const root = setView(`
-    <div class="card">
-      <div class="topline">
-        <div class="h1">First run setup</div>
-      </div>
-      <div class="muted">Media root inside container: <span class="code">${esc(state.mediaRoot)}</span></div>
+  layout("First run setup", `
+    <section class="card">
+      <h2>Create admin</h2>
+      <p class="muted">Do this once. After that, you’ll just login.</p>
 
-      <div class="form" style="margin-top:14px;">
+      <div class="form">
         <div class="field">
-          <label>Admin username</label>
-          <input id="u" placeholder="admin" autocomplete="username" />
+          <label>Username</label>
+          <input id="su" autocomplete="username" placeholder="admin" />
         </div>
         <div class="field">
-          <label>Admin password</label>
-          <input id="p" type="password" placeholder="min 8 chars" autocomplete="new-password" />
+          <label>Password</label>
+          <input id="sp" type="password" autocomplete="new-password" placeholder="min 8 chars" />
         </div>
       </div>
 
-      <div class="row" style="margin-top:14px;">
-        <button class="btn" id="go">Create admin</button>
-        <div class="status" id="s"></div>
+      <div class="row">
+        ${btn("createAdmin", "Create admin", "primary")}
+        <div class="grow"></div>
       </div>
 
-      <div class="muted" style="margin-top:12px;">
-        Reminder: the container can only see what you mount. Example:
-        <span class="code">-v /mnt/user/media:${esc(state.mediaRoot)}</span>
-      </div>
-    </div>
+      <p class="hint">
+        Reminder: the container can only see what you mount.
+        Example: <span class="code">-v /mnt/user:/mnt/user</span>
+      </p>
+    </section>
   `);
 
-  const s = root.querySelector("#s");
-  const setStatus = (m, kind = "") => {
-    s.className = `status ${kind}`;
-    s.textContent = m || "";
-  };
-
-  root.querySelector("#go").onclick = async () => {
-    const username = root.querySelector("#u").value.trim();
-    const password = root.querySelector("#p").value;
+  document.querySelector("#createAdmin").onclick = async () => {
+    const username = document.querySelector("#su").value.trim();
+    const password = document.querySelector("#sp").value;
 
     setStatus("Creating admin…");
     try {
@@ -154,66 +200,63 @@ function renderSetup() {
         method: "POST",
         body: JSON.stringify({ username, password }),
       });
-      setStatus("Admin created. Loading…", "ok");
-      await boot();
+      setStatus("Admin created. Go login.");
+      renderLogin();
     } catch (e) {
-      setStatus(`Setup failed: ${e.message}`, "err");
+      setStatus(`Setup failed: ${e.message}`);
     }
   };
 }
 
 function renderLogin() {
-  const root = setView(`
-    <div class="card">
-      <div class="topline">
-        <div class="h1">Sign in</div>
-      </div>
-      <div class="muted">Media root: <span class="code">${esc(state.mediaRoot)}</span></div>
+  layout("Sign in", `
+    <section class="card">
+      <h2>Login</h2>
+      <p class="muted">Sign in to manage libraries and play titles.</p>
 
-      <div class="form" style="margin-top:14px;">
+      <div class="form">
         <div class="field">
           <label>Username</label>
-          <input id="u" placeholder="admin" autocomplete="username" />
+          <input id="lu" autocomplete="username" placeholder="admin" />
         </div>
         <div class="field">
           <label>Password</label>
-          <input id="p" type="password" placeholder="••••••••" autocomplete="current-password" />
+          <input id="lp" type="password" autocomplete="current-password" placeholder="••••••••" />
         </div>
       </div>
 
-      <div class="row" style="margin-top:14px;">
-        <button class="btn" id="go">Login</button>
-        <div class="status" id="s"></div>
+      <div class="row">
+        ${btn("loginBtn", "Login", "primary")}
+        <div class="grow"></div>
       </div>
-    </div>
+    </section>
   `);
 
-  const s = root.querySelector("#s");
-  const setStatus = (m, kind = "") => {
-    s.className = `status ${kind}`;
-    s.textContent = m || "";
-  };
-
   const doLogin = async () => {
-    const username = root.querySelector("#u").value.trim();
-    const password = root.querySelector("#p").value;
+    const username = document.querySelector("#lu").value.trim();
+    const password = document.querySelector("#lp").value;
 
     setStatus("Logging in…");
     try {
-      await api("/api/auth/login", {
+      const res = await api("/api/auth/login", {
         method: "POST",
         body: JSON.stringify({ username, password }),
       });
-      setStatus("Logged in.", "ok");
-      await renderApp();
+
+      // If backend returns token (recommended), persist it:
+      if (res && res.token) setToken(res.token);
+      setUsername(res?.username || username);
+
+      setStatus("");
+      await renderLibraries();
     } catch (e) {
-      setStatus(`Login failed: ${e.message}`, "err");
+      setStatus(`Login failed: ${e.message}`);
     }
   };
 
-  root.querySelector("#go").onclick = doLogin;
-  root.querySelector("#p").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") doLogin();
+  document.querySelector("#loginBtn").onclick = doLogin;
+  document.querySelector("#lp").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") doLogin();
   });
 }
 
@@ -221,267 +264,285 @@ async function loadLibraries() {
   const data = await api("/api/libraries");
   state.mediaRoot = data.mediaRoot || state.mediaRoot;
   state.libraries = Array.isArray(data.libraries) ? data.libraries : [];
-
-  if (state.currentLibId && !state.libraries.some((l) => l.id === state.currentLibId)) {
-    state.currentLibId = null;
-  }
-  if (!state.currentLibId && state.libraries.length) {
-    state.currentLibId = state.libraries[0].id;
-  }
 }
 
 async function loadFolders() {
-  // depth=1 keeps it “main folders only”
-  const data = await api("/api/libraries/discover?depth=1");
+  const data = await api("/api/libraries/discover");
+  // backend returns objects: {label, path} :contentReference[oaicite:5]{index=5}
   state.folders = Array.isArray(data.folders) ? data.folders : [];
 }
 
-async function loadItems() {
-  state.items = [];
-  if (!state.currentLibId) return;
+async function renderLibraries() {
+  state.view = "libraries";
+  setStatus("Loading…");
 
-  const data = await api(`/api/items?library_id=${encodeURIComponent(state.currentLibId)}&limit=500&offset=0`);
-  state.items = Array.isArray(data.items) ? data.items : [];
-}
-
-async function renderApp() {
-  stopPolling();
-
-  // Load state
-  await Promise.all([loadLibraries(), loadFolders()]);
-  await loadItems();
-
-  const root = setView(`
-    <div class="card">
-      <div class="topbar">
-        <div>
-          <div class="h1">Libraries</div>
-          <div class="muted">Media root: <span class="code">${esc(state.mediaRoot)}</span></div>
-        </div>
-        <div class="topbar-actions">
-          <button class="btn ghost" id="refresh">Refresh</button>
-          <button class="btn danger" id="logout">Logout</button>
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:14px;">
-        <div class="field grow">
-          <label>Current library</label>
-          <select id="libSelect"></select>
-        </div>
-        <button class="btn" id="scanBtn" ${state.currentLibId ? "" : "disabled"}>Scan</button>
-        <div class="status grow" id="status"></div>
-      </div>
-
-      <div class="divider"></div>
-
-      <div class="h2">Add library</div>
-      <div class="row">
-        <div class="field grow">
-          <label>Name</label>
-          <input id="newName" placeholder="Movies" />
-        </div>
-        <div class="field grow">
-          <label>Folder</label>
-          <select id="folderSelect"></select>
-        </div>
-        <button class="btn" id="addBtn">Add</button>
-      </div>
-      <div class="muted" style="margin-top:8px;">
-        Tip: folder dropdown comes from <span class="code">/api/libraries/discover</span>.
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="topline">
-        <div class="h1">Titles</div>
-        <div class="muted" id="countLine"></div>
-      </div>
-      <div class="list" id="items"></div>
-    </div>
-
-    <div class="card" id="playerCard" style="display:none;">
-      <div class="muted">Now playing</div>
-      <div class="now" id="nowTitle"></div>
-      <video id="player" controls playsinline></video>
-    </div>
-  `);
-
-  const status = root.querySelector("#status");
-  const setStatus = (m, kind = "") => {
-    status.className = `status ${kind}`;
-    status.textContent = m || "";
-  };
-
-  // Populate library select
-  const libSelect = root.querySelector("#libSelect");
-  libSelect.innerHTML = state.libraries.length
-    ? state.libraries
-        .map(
-          (l) =>
-            `<option value="${l.id}" ${l.id === state.currentLibId ? "selected" : ""}>${esc(l.name)} — ${esc(l.path)}</option>`
-        )
-        .join("")
-    : `<option value="">(no libraries yet)</option>`;
-
-  libSelect.onchange = async () => {
-    state.currentLibId = libSelect.value ? parseInt(libSelect.value, 10) : null;
-    setStatus("Loading…");
-    try {
-      await loadItems();
-      renderItems();
-      setStatus("");
-    } catch (e) {
-      setStatus(e.message, "err");
-    }
-  };
-
-  // Populate folders
-  const folderSelect = root.querySelector("#folderSelect");
-  folderSelect.innerHTML = state.folders.length
-    ? state.folders.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("")
-    : `<option value="">(no folders discovered)</option>`;
-
-  // Add library
-  root.querySelector("#addBtn").onclick = async () => {
-    const name = root.querySelector("#newName").value.trim();
-    const path = folderSelect.value;
-
-    if (!name) return setStatus("Name is required.", "err");
-    if (!path) return setStatus("No folder selected.", "err");
-
-    setStatus("Creating library…");
-    try {
-      const res = await api("/api/libraries", {
-        method: "POST",
-        body: JSON.stringify({ name, path }),
-      });
-
-      // Prefer returned library id if present
-      if (res?.library?.id) state.currentLibId = res.library.id;
-
-      await renderApp();
-    } catch (e) {
-      setStatus(`Add failed: ${e.message}`, "err");
-    }
-  };
-
-  // Scan
-  root.querySelector("#scanBtn").onclick = async () => {
-    if (!state.currentLibId) return;
-
-    setStatus("Scan queued…", "ok");
-    try {
-      await api(`/api/libraries/${state.currentLibId}/scan`, { method: "POST" });
-    } catch (e) {
-      setStatus(`Scan failed: ${e.message}`, "err");
+  try {
+    await Promise.all([loadLibraries(), loadFolders()]);
+  } catch (e) {
+    if (e.status === 401) {
+      setToken("");
+      setUsername("");
+      renderLogin();
       return;
     }
+    layout("Error", `<section class="card"><h2>Error</h2><p class="muted">${esc(e.message)}</p></section>`);
+    return;
+  }
 
-    // Poll items so the page updates without refresh
-    const startCount = state.items.length;
-    let ticks = 0;
+  setStatus("");
 
-    const poll = async () => {
-      ticks++;
-      try {
-        await loadItems();
-        renderItems();
-        const changed = state.items.length !== startCount;
-        if (changed) setStatus(`Scan running… found ${state.items.length}`, "ok");
-        else setStatus(`Scan running… (${ticks})`, "ok");
+  const user = getUsername() ? `<div class="pill">${esc(getUsername())}</div>` : "";
+  layout(
+    "Libraries",
+    `
+      <section class="card">
+        <div class="cardHead">
+          <h2>Libraries</h2>
+          <div class="cardActions">
+            ${btn("refreshLibs", "Refresh", "ghost")}
+            ${btn("logoutBtn", "Logout", "danger")}
+          </div>
+        </div>
 
-        // Stop after ~90s
-        if (ticks >= 45) {
-          setStatus("Scan finished (or timed out).", "ok");
-          clearInterval(state.pollTimer);
-          state.pollTimer = null;
-        }
-      } catch (e) {
-        setStatus(`Polling error: ${e.message}`, "err");
-        clearInterval(state.pollTimer);
-        state.pollTimer = null;
-      }
-    };
+        <div class="subcard">
+          <h3>Add library</h3>
+          <div class="row">
+            <div class="field grow">
+              <label>Name</label>
+              <input id="newName" placeholder="Movies" />
+            </div>
+            <div class="field grow">
+              <label>Folder</label>
+              <select id="folderSelect">
+                ${
+                  state.folders.length
+                    ? state.folders
+                        .map((f) => `<option value="${esc(f.path)}">${esc(f.label)}</option>`)
+                        .join("")
+                    : `<option value="">(no folders discovered)</option>`
+                }
+              </select>
+            </div>
+            ${btn("addLibBtn", "Add", "primary")}
+          </div>
+          <p class="hint">Dropdown shows only top-level folders under <span class="code">${esc(state.mediaRoot)}</span>.</p>
+        </div>
 
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = setInterval(poll, 2000);
-    poll();
-  };
+        <div class="subcard">
+          <h3>Existing</h3>
+          ${
+            state.libraries.length
+              ? `<div class="libList">
+                  ${state.libraries
+                    .map(
+                      (l) => `
+                        <div class="libRow">
+                          <div class="libMeta">
+                            <div class="libName">${esc(l.name)}</div>
+                            <div class="libPath code">${esc(l.path)}</div>
+                          </div>
+                          <div class="libBtns">
+                            <button class="btn ghost" data-browse="${l.id}">Browse</button>
+                            <button class="btn" data-scan="${l.id}">Scan</button>
+                          </div>
+                        </div>
+                      `
+                    )
+                    .join("")}
+                </div>`
+              : `<p class="muted">No libraries yet. Add one above.</p>`
+          }
+        </div>
+      </section>
+    `,
+    user
+  );
 
-  // Refresh button
-  root.querySelector("#refresh").onclick = async () => {
-    setStatus("Refreshing…");
-    try {
-      await renderApp();
-    } catch (e) {
-      setStatus(e.message, "err");
-    }
-  };
-
-  // Logout button
-  root.querySelector("#logout").onclick = async () => {
+  document.querySelector("#logoutBtn").onclick = async () => {
     setStatus("Logging out…");
     try {
       await api("/api/auth/logout", { method: "POST" });
     } catch (_) {}
-    await boot();
+    setToken("");
+    setUsername("");
+    setStatus("");
+    renderLogin();
   };
 
-  // Items list + player
-  const itemsEl = root.querySelector("#items");
-  const countLine = root.querySelector("#countLine");
-  const playerCard = root.querySelector("#playerCard");
-  const player = root.querySelector("#player");
-  const nowTitle = root.querySelector("#nowTitle");
+  document.querySelector("#refreshLibs").onclick = async () => {
+    await renderLibraries();
+  };
 
-  function renderItems() {
-    countLine.textContent = state.currentLibId
-      ? `${state.items.length} item(s)`
-      : "Select a library";
+  document.querySelector("#addLibBtn").onclick = async () => {
+    const name = document.querySelector("#newName").value.trim();
+    const path = document.querySelector("#folderSelect").value;
 
-    if (!state.items.length) {
-      itemsEl.innerHTML = `<div class="muted">No items yet. Add a library and hit Scan.</div>`;
+    if (!name) return setStatus("Name is required.");
+    if (!path) return setStatus("Folder is required.");
+
+    setStatus("Creating library…");
+    try {
+      await api("/api/libraries", {
+        method: "POST",
+        body: JSON.stringify({ name, path }),
+      });
+      setStatus("Library created.");
+      await renderLibraries();
+    } catch (e) {
+      setStatus(`Add failed: ${e.message}`);
+    }
+  };
+
+  // Browse
+  document.querySelectorAll("[data-browse]").forEach((b) => {
+    b.onclick = async () => {
+      const id = parseInt(b.getAttribute("data-browse"), 10);
+      const lib = state.libraries.find((x) => x.id === id);
+      if (!lib) return;
+      state.currentLib = lib;
+      await renderBrowse();
+    };
+  });
+
+  // Scan
+  document.querySelectorAll("[data-scan]").forEach((b) => {
+    b.onclick = async () => {
+      const id = parseInt(b.getAttribute("data-scan"), 10);
+      setStatus("Scan queued…");
+      try {
+        await api(`/api/libraries/${id}/scan`, { method: "POST" });
+        setStatus("Scan started in background. Go browse in a few seconds.");
+      } catch (e) {
+        setStatus(`Scan failed: ${e.message}`);
+      }
+    };
+  });
+}
+
+async function loadItemsFor(libId) {
+  const data = await api(`/api/items?library_id=${encodeURIComponent(libId)}&limit=500&offset=0`);
+  state.items = Array.isArray(data.items) ? data.items : [];
+}
+
+async function renderBrowse() {
+  state.view = "browse";
+  setStatus("Loading titles…");
+
+  try {
+    await loadItemsFor(state.currentLib.id);
+  } catch (e) {
+    if (e.status === 401) {
+      setToken("");
+      setUsername("");
+      renderLogin();
       return;
     }
-
-    itemsEl.innerHTML = state.items
-      .map(
-        (i) => `
-        <button class="item" data-id="${i.id}">
-          <div class="item-title">${esc(i.title)}</div>
-          <div class="item-meta">${esc(i.ext)} • ${esc(i.size_bytes)} bytes</div>
-        </button>
-      `
-      )
-      .join("");
-
-    itemsEl.querySelectorAll(".item").forEach((btn) => {
-      btn.onclick = async () => {
-        const id = parseInt(btn.getAttribute("data-id"), 10);
-        const item = state.items.find((x) => x.id === id);
-        if (!item) return;
-
-        nowTitle.textContent = item.title || `Item ${id}`;
-        player.src = `/api/items/${id}/file`;
-        playerCard.style.display = "";
-        try {
-          await player.play();
-        } catch (_) {
-          // autoplay might be blocked; user can hit play manually
-        }
-      };
-    });
+    setStatus(e.message);
   }
 
-  renderItems();
+  setStatus("");
+
+  layout(
+    `Browse • ${state.currentLib.name}`,
+    `
+      <section class="card">
+        <div class="cardHead">
+          <div>
+            <h2>${esc(state.currentLib.name)}</h2>
+            <p class="muted">${esc(state.items.length)} item(s)</p>
+          </div>
+          <div class="cardActions">
+            ${btn("backBtn", "Back", "ghost")}
+            ${btn("refreshBtn", "Refresh", "ghost")}
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field grow">
+            <label>Search</label>
+            <input id="q" placeholder="Type to filter…" />
+          </div>
+        </div>
+
+        <div class="items" id="items">
+          ${renderItemsHtml(state.items)}
+        </div>
+
+        <div class="player" id="playerWrap" style="display:none;">
+          <div class="now">
+            <div class="muted">Now playing</div>
+            <div class="nowTitle" id="nowTitle"></div>
+          </div>
+          <video id="player" controls playsinline></video>
+        </div>
+      </section>
+    `
+  );
+
+  document.querySelector("#backBtn").onclick = async () => renderLibraries();
+  document.querySelector("#refreshBtn").onclick = async () => {
+    setStatus("Refreshing…");
+    await loadItemsFor(state.currentLib.id);
+    setStatus("");
+    document.querySelector("#items").innerHTML = renderItemsHtml(state.items);
+    wireItemClicks();
+  };
+
+  const q = document.querySelector("#q");
+  q.oninput = () => {
+    const s = q.value.trim().toLowerCase();
+    const filtered = !s
+      ? state.items
+      : state.items.filter((i) => (i.title || "").toLowerCase().includes(s));
+    document.querySelector("#items").innerHTML = renderItemsHtml(filtered);
+    wireItemClicks();
+  };
+
+  wireItemClicks();
+}
+
+function renderItemsHtml(items) {
+  if (!items.length) return `<p class="muted">No items yet. Run Scan.</p>`;
+  return items
+    .map(
+      (i) => `
+        <button class="item" data-id="${i.id}">
+          <div class="itemTitle">${esc(i.title)}</div>
+          <div class="itemMeta">${esc(i.ext || "")}</div>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function wireItemClicks() {
+  const wrap = document.querySelector("#playerWrap");
+  const player = document.querySelector("#player");
+  const nowTitle = document.querySelector("#nowTitle");
+
+  document.querySelectorAll(".item[data-id]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = parseInt(btn.getAttribute("data-id"), 10);
+      const item = state.items.find((x) => x.id === id);
+      if (!item) return;
+
+      nowTitle.textContent = item.title || `Item ${id}`;
+      player.src = `/api/items/${id}/file`;
+      wrap.style.display = "";
+      try {
+        await player.play();
+      } catch (_) {
+        // autoplay may be blocked
+      }
+    };
+  });
 }
 
 boot().catch((e) => {
-  setView(`
-    <div class="card">
-      <div class="h1">Boot error</div>
-      <div class="muted">${esc(e.message)}</div>
-    </div>
+  layout("Boot error", `
+    <section class="card">
+      <h2>Boot error</h2>
+      <p class="muted">${esc(e.message)}</p>
+    </section>
   `);
 });

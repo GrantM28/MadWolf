@@ -26,7 +26,16 @@ def _startup():
     os.makedirs(MEDIA_ROOT, exist_ok=True)
 
 def current_user_id(request: Request) -> int:
+    # 1) Cookie auth (normal same-origin browser use)
     token = request.cookies.get(COOKIE_NAME)
+
+    # 2) Header auth fallback (fixes “refresh sends me to login” when cookie isn’t persisted,
+    #    or when you’re testing from a different origin like VSCode live server)
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+
     uid = verify_session_token(token) if token else None
     if not uid:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -77,6 +86,8 @@ class LoginBody(BaseModel):
     username: str
     password: str
 
+from datetime import datetime, timedelta
+
 @app.post("/api/auth/login")
 def login(body: LoginBody):
     with session() as s:
@@ -85,21 +96,31 @@ def login(body: LoginBody):
             raise HTTPException(status_code=401, detail="bad_credentials")
 
         token = create_session_token(user.id)
-        resp = JSONResponse({"ok": True, "username": user.username})
+
+        resp = JSONResponse({
+            "ok": True,
+            "username": user.username,
+            "token": token,  # <-- lets the frontend persist session on refresh
+        })
+
+        expires = datetime.utcnow() + timedelta(days=14)
+
         resp.set_cookie(
             COOKIE_NAME,
             token,
             httponly=True,
             samesite="lax",
-            secure=False,  # set True when behind HTTPS
+            secure=False,     # set True when behind HTTPS
             max_age=60 * 60 * 24 * 14,
+            expires=expires,
+            path="/",         # be explicit
         )
         return resp
 
 @app.post("/api/auth/logout")
 def logout():
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(COOKIE_NAME)
+    resp.delete_cookie(COOKIE_NAME, path="/")
     return resp
 
 # -------- Libraries --------
