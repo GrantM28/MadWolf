@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from .db import init_db, session
-from .models import User, Library, MediaItem, WatchEvent
+from .models import User, Library, MediaItem, WatchEvent, MediaMeta
 from .security import hash_pw, verify_pw, create_session_token, verify_session_token, COOKIE_NAME
 from .scanner import scan_library
 from .streaming import serve_file_with_range
@@ -214,8 +214,37 @@ def list_items(request: Request, library_id: int | None = None, q: str | None = 
             stmt = stmt.where(MediaItem.library_id == library_id)
         if q:
             stmt = stmt.where(MediaItem.title.like(f"%{q}%"))
+
         items = s.exec(stmt.offset(offset).limit(limit)).all()
-        return {"items": items}
+        if not items:
+            return {"items": []}
+
+        ids = [it.id for it in items if it.id is not None]
+        metas = s.exec(select(MediaMeta).where(MediaMeta.media_id.in_(ids))).all()
+        meta_map = {m.media_id: m for m in metas}
+
+        out = []
+        for it in items:
+            m = meta_map.get(it.id)
+            out.append({
+                "id": it.id,
+                "library_id": it.library_id,
+                "title": (m.clean_title if m and m.clean_title else it.title),
+                "year": (m.year if m else None),
+                "plot": (m.plot if m else None),
+                "duration_seconds": (m.duration_seconds if m else None),
+                "width": (m.width if m else None),
+                "height": (m.height if m else None),
+                "video_codec": (m.video_codec if m else None),
+                "audio_codec": (m.audio_codec if m else None),
+                "audio_channels": (m.audio_channels if m else None),
+                "poster_url": (f"/api/items/{it.id}/poster" if m and m.poster_path else None),
+                "ext": it.ext,
+                "size_bytes": it.size_bytes,
+                "created_at": it.created_at,
+            })
+
+        return {"items": out}
 
 @app.get("/api/items/{item_id}")
 def get_item(request: Request, item_id: int):
@@ -234,6 +263,30 @@ def stream_item(request: Request, item_id: int):
         if not it:
             raise HTTPException(status_code=404, detail="not_found")
         return serve_file_with_range(request, it.path)
+    from fastapi.responses import FileResponse
+
+@app.get("/api/items/{item_id}/poster")
+def item_poster(request: Request, item_id: int):
+    _ = current_user_id(request)
+
+    with session() as s:
+        it = s.get(MediaItem, item_id)
+        if not it:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        meta = s.get(MediaMeta, item_id)
+        if not meta or not meta.poster_path:
+            raise HTTPException(status_code=404, detail="no_poster")
+
+        poster = os.path.abspath(meta.poster_path)
+        mr = os.path.abspath(MEDIA_ROOT)
+
+        # security: don't allow serving random files outside your media root
+        if not poster.startswith(mr) or not os.path.isfile(poster):
+            raise HTTPException(status_code=404, detail="no_poster")
+
+        return FileResponse(poster)
+
 
 # -------- Watch tracking + “AI rows” plumbing --------
 class ProgressBody(BaseModel):

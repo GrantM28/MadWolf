@@ -25,6 +25,25 @@ class MediaItem(SQLModel, table=True):
     size_bytes: int
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class MediaMeta(SQLModel, table=True):
+    media_id: int = Field(primary_key=True)  # 1:1 with MediaItem.id
+
+    clean_title: str | None = None
+    year: int | None = None
+    plot: str | None = None
+
+    duration_seconds: int | None = None
+    width: int | None = None
+    height: int | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    audio_channels: int | None = None
+
+    poster_path: str | None = None  # absolute path inside container
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class WatchEvent(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(index=True)
