@@ -27,7 +27,7 @@ function renderShell(inner) {
         <div class="brand">
           <div class="logo"></div>
           <div>
-            <h1>Streambox</h1>
+            <h1>MadWolf</h1>
             <div class="sub">Your self-hosted streaming server (MVP)</div>
           </div>
         </div>
