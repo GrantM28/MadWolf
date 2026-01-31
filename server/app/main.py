@@ -203,7 +203,7 @@ def create_library(request: Request, body: LibraryCreate):
 def scan(request: Request, library_id: int, bg: BackgroundTasks, force_meta: bool = False):
     _ = current_user_id(request)
     results = {"ok": True, "queued": True, "force_meta": force_meta}
-    bg.add_task(scan_library, library_id, force_meta=force_meta)
+    bg.add_task(scan_library, library_id, force_meta)
     return results
 
 # -------- Items --------

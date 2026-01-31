@@ -5,7 +5,15 @@ from sqlmodel import select
 
 from .db import session
 from .models import Library, MediaItem, MediaMeta
-from .metadata import extract_metadata
+
+# Works with either metadata.py version:
+# - old: extract_local_metadata
+# - new: extract_metadata (TMDB-enabled)
+try:
+    from .metadata import extract_metadata as _extract_metadata
+except ImportError:
+    from .metadata import extract_local_metadata as _extract_metadata
+
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm"}
 
@@ -17,7 +25,6 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
         return {"ok": False, "error": "scan_already_running"}
 
     try:
-        # Fetch library path in a tiny transaction
         with session() as s:
             lib = s.get(Library, library_id)
             if not lib:
@@ -43,13 +50,14 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
                 except OSError:
                     continue
 
-                # --- Phase 1: ensure MediaItem exists (short transaction) ---
                 needs_meta = False
                 item_id = None
                 title = os.path.splitext(fn)[0].replace(".", " ").replace("_", " ").strip()
 
+                # --- Phase 1: ensure MediaItem exists (short transaction) ---
                 with session() as s:
                     item = s.exec(select(MediaItem).where(MediaItem.path == full_path)).first()
+                    mm = None  # <-- prevents your crash
 
                     if item:
                         existed += 1
@@ -57,15 +65,17 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
                         title = item.title or title
 
                         mm = s.get(MediaMeta, item_id) if item_id else None
-                    if mm and not force_meta:
-                        complete_enough = bool(
-                            (mm.clean_title) and
-                            (mm.duration_seconds or mm.video_codec or (mm.width and mm.height)) and
-                            (mm.poster_path or mm.plot)
-                        )
-                        if complete_enough:
-                            meta_skipped += 1
-                            continue
+
+                        # Skip only if we are NOT forcing meta refresh
+                        if mm and not force_meta:
+                            complete_enough = bool(
+                                (mm.clean_title) and
+                                (mm.duration_seconds or mm.video_codec or (mm.width and mm.height)) and
+                                (mm.poster_path or mm.plot)
+                            )
+                            if complete_enough:
+                                meta_skipped += 1
+                                continue
 
                         needs_meta = True
 
@@ -88,7 +98,7 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
                     continue
 
                 # --- Phase 2: slow metadata OUTSIDE any DB lock ---
-                meta = extract_metadata(full_path, title)
+                meta = _extract_metadata(full_path, title)
 
                 # --- Phase 3: upsert MediaMeta (short transaction) ---
                 with session() as s:
@@ -98,19 +108,20 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
                         meta_added += 1
                     else:
                         if force_meta:
-                            # overwrite with latest (good for fixing wrong posters/plots)
+                            # overwrite (fix wrong posters/plots)
                             for k, v in meta.items():
                                 if v is None:
                                     continue
                                 setattr(mm, k, v)
                         else:
-                            # Fill missing fields only (don’t overwrite good data)
+                            # fill missing only
                             for k, v in meta.items():
                                 if v is None:
                                     continue
                                 cur = getattr(mm, k, None)
                                 if cur in (None, "", 0):
                                     setattr(mm, k, v)
+
                         mm.updated_at = datetime.utcnow()
                         s.add(mm)
                         meta_updated += 1
@@ -120,6 +131,7 @@ def scan_library(library_id: int, force_meta: bool = False) -> dict:
         return {
             "ok": True,
             "library_id": library_id,
+            "force_meta": force_meta,
             "added": added,
             "existed": existed,
             "meta_added": meta_added,
