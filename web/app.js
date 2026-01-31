@@ -347,8 +347,9 @@ async function renderLibraries() {
                             <div class="libPath code">${esc(l.path)}</div>
                           </div>
                           <div class="libBtns">
-                            <button class="btn ghost" data-browse="${l.id}">Browse</button>
-                            <button class="btn" data-scan="${l.id}">Scan</button>
+                          <button class="btn ghost" data-browse="${l.id}">Browse</button>
+                          <button class="btn" data-scan="${l.id}">Scan</button>
+                          <button class="btn" data-refreshmeta="${l.id}">Refresh metadata</button>
                           </div>
                         </div>
                       `
@@ -423,6 +424,21 @@ async function renderLibraries() {
     };
   });
 }
+
+// Refresh metadata (force overwrite from TMDB/local)
+document.querySelectorAll("[data-refreshmeta]").forEach((b) => {
+  b.onclick = async () => {
+    const id = parseInt(b.getAttribute("data-refreshmeta"), 10);
+    setStatus("Metadata refresh queued…");
+    try {
+      await api(`/api/libraries/${id}/scan?force_meta=true`, { method: "POST" });
+      setStatus("Metadata refresh started. Browse again in a bit.");
+    } catch (e) {
+      setStatus(`Refresh failed: ${e.message}`);
+    }
+  };
+});
+
 
 async function loadItemsFor(libId) {
   const data = await api(`/api/items?library_id=${encodeURIComponent(libId)}&limit=500&offset=0`);

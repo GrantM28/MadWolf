@@ -22,7 +22,7 @@ DROP = {
     "x264","x265","h264","h265","hevc","avc",
     "aac","ac3","dts","truehd","eac3","flac","mp3",
     "yify","yts","rarbg","etrg","evo",
-    "proper","repack","remux","extended","unrated","limited","complete",
+    "proper","repack","remux","extended","unrated","limited","complete","mkv","1920","3840","2160"
 }
 
 # We keep folder/cover art BUT only for single-movie folders (prevents "collection poster used for everything")
@@ -43,7 +43,17 @@ _EP_RE2 = re.compile(r"(?:^|[ ._\-])(?P<s>\d{1,2})x(?P<e>\d{1,2})(?:$|[ ._\-])",
 # Local metadata helpers
 # -------------------------
 def clean_title_year(filename_no_ext: str) -> tuple[str, int | None]:
-    s = filename_no_ext.replace(".", " ").replace("_", " ")
+    s = filename_no_ext.replace(".", " ").replace("_", " ").replace("-", " ")
+
+    # kill common audio tags that are breaking similarity matching
+    s = re.sub(r"\b(?:aac|dd|ddp|eac3|ac3|dts)\s*5\s*1\b", " ", s, flags=re.I)
+    s = re.sub(r"\b(?:aac|dd)\s*2\s*0\b", " ", s, flags=re.I)
+
+    # kill common “WEB” variants and other frequent junk
+    s = re.sub(r"\bweb\s*dl\b", " ", s, flags=re.I)
+    s = re.sub(r"\bwebrip\b", " ", s, flags=re.I)
+    s = re.sub(r"\bweb\b", " ", s, flags=re.I)
+
     s = re.sub(r"\[[^\]]*\]", " ", s)  # remove [groups]
 
     year = None
@@ -282,6 +292,10 @@ def _tmdb_get_json(path: str, params: dict) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            # TMDB error payloads often look like: {"status_code": 7, "status_message": "..."}
+        if isinstance(data, dict) and data.get("status_code") and not data.get("results"):
+            print(f"[TMDB] error {data.get('status_code')}: {data.get('status_message')}")
+
     except Exception:
         data = {}
 
