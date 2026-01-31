@@ -200,11 +200,10 @@ def create_library(request: Request, body: LibraryCreate):
 
 # -------- Scanning --------
 @app.post("/api/libraries/{library_id}/scan")
-def scan(request: Request, library_id: int, bg: BackgroundTasks):
+def scan(request: Request, library_id: int, bg: BackgroundTasks, force_meta: bool = False):
     _ = current_user_id(request)
-    # background scan so UI doesn't hang
-    results = {"ok": True, "queued": True}
-    bg.add_task(scan_library, library_id)
+    results = {"ok": True, "queued": True, "force_meta": force_meta}
+    bg.add_task(scan_library, library_id, force_meta=force_meta)
     return results
 
 # -------- Items --------
